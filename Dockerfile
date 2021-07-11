@@ -3,9 +3,9 @@ FROM alpine:latest
 RUN set -x \
     && apk add --no-cache \
         bash \
-        openssh-client \
         rsync
 
 COPY container/ /
+RUN chmod +x /backup-cleanup.sh
 
-CMD [ "disk-backup.sh" ]
+ENTRYPOINT [ "/backup-cleanup.sh" ]

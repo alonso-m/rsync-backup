@@ -33,30 +33,6 @@ COMPLETE_TARGET_DIR="${TARGET_DIR_PATH}.backup_${TIMESTAMP}"
 INCOMPLETE_TARGET_DIR="${TARGET_DIR_PATH}.incomplete"
 CURRENT_TARGET_DIR="${TARGET_DIR_PATH}.current"
 
-# this is not targeted as a reusable container
-SSH_KEYFILE=""
-SSH_KEYFILE_TMP=
-if [[ -r /mnt/id_rsa ]] && [[ -r /mnt/id_rsa.pub ]]; then
-    SSH_KEYFILE_TMP="$(mktemp /tmp/ssh.id_rsa.XXXXXX)"
-    cat /mnt/id_rsa > ${SSH_KEYFILE_TMP}
-    cat /mnt/id_rsa.pub > ${SSH_KEYFILE_TMP}.pub
-    SSH_KEYFILE="-i ${SSH_KEYFILE_TMP}"
-fi
-
-# ssh verbosity level
-SSH_LOGGING_LEVEL="-q"
-if [[ -n ${VERBOSE:-} ]]; then
-    SSH_LOGGING_LEVEL="-v"
-fi
-
-# Clean up stray files
-function cleanup {
-    if [[ -e "${SSH_KEYFILE_TMP}" ]]; then
-        rm -f "${SSH_KEYFILE_TMP}" "${SSH_KEYFILE_TMP}.pub"
-    fi
-}
-trap cleanup EXIT
-
 RSYNC_ARGS=(
     --archive
     --one-file-system
@@ -68,7 +44,6 @@ RSYNC_ARGS=(
     --ignore-errors
     --verbose
     -F # --filter='dir-merge /.rsync-filter' repeated: --filter='- .rsync-filter'
-    --rsh="ssh -p ${SSH_PORT:-22} ${SSH_LOGGING_LEVEL} -o ConnectTimeout=${SSH_CONNECT_TIMEOUT:-5} -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ${SSH_KEYFILE} ${SSH_OPTIONS:-}"
     --link-dest="${CURRENT_TARGET_DIR}/"
     ${RSYNC_OPTIONS:-}
     "${SOURCE_DIR/%\//}/"
@@ -76,7 +51,7 @@ RSYNC_ARGS=(
 )
 
 # 1. Copy over all files
-# 2. only when successful, move he incomplete path to a completed path
+# 2. only when successful, move the incomplete path to a completed path
 # 3. delete the quick reference symlink the most recent backup
 # 4. make a new reference to the latest backup
 # 5. make sure this folder's last modified time is now!
@@ -85,3 +60,47 @@ rsync "${RSYNC_ARGS[@]}" \
     && rm -f "${CURRENT_TARGET_DIR}" \
     && (cd "${TARGET_DIR}" && ln -s "$(basename "${COMPLETE_TARGET_DIR}")" "${CURRENT_TARGET_DIR}" ) \
     && touch "${COMPLETE_TARGET_DIR}"
+
+TARGET_DIR="${TARGET_DIR:-}"
+MAX_AGE="${MAX_AGE:-180}"
+if [[ -z "${TARGET_DIR}" ]]; then
+    echo "Unknown TARGET_DIR"
+    exit 1
+fi
+
+if [[ ! -d "${TARGET_DIR}" ]]; then
+    echo "Destination directory not found"
+    exit 1
+fi
+
+TARGET_DIR_PATH="${TARGET_DIR/%\//}"
+FIND_ARGS=(
+    "${TARGET_DIR_PATH}"
+    -maxdepth 1
+    -iname 'daily.*'
+    -mtime +${MAX_AGE}
+    -type d
+)
+
+# If there's no files to delete, that's ok
+if ! ( find "${FIND_ARGS[@]}" \
+    | grep -v incomplete \
+    | grep -q -v "$(basename "$(readlink "${TARGET_DIR_PATH}/daily.current")")" ); then
+    exit 0
+fi
+
+# print found files for logging
+find "${FIND_ARGS[@]}" \
+    | grep -v incomplete \
+    | grep -v "$(basename "$(readlink "${TARGET_DIR_PATH}/daily.current")")" \
+    | sort
+
+# 1. Find all old backups
+# 2. Exclude the current in progress folder
+# 3. Exclude the current backup
+# 4. remove found backups
+find "${FIND_ARGS[@]}" \
+    | grep -v incomplete \
+    | grep -v "$(basename "$(readlink "${TARGET_DIR_PATH}/daily.current")")" \
+    | sort \
+    | xargs -t -r rm -rf
